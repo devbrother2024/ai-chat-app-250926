@@ -13,7 +13,11 @@ import {
     Check,
     Plus,
     MessageSquare,
-    Server
+    Server,
+    Zap,
+    ZapOff,
+    PlayCircle,
+    CheckCircle
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -21,8 +25,19 @@ import rehypeHighlight from 'rehype-highlight'
 import type { Components } from 'react-markdown'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Switch } from '@/components/ui/switch'
 import MCPServerManager from '@/components/mcp-server-manager'
+
+interface FunctionCall {
+    name: string
+    arguments: Record<string, unknown>
+}
+
+interface FunctionResponse {
+    name: string
+    response: unknown
+}
 
 interface Message {
     id: string
@@ -30,6 +45,8 @@ interface Message {
     sender: 'user' | 'ai'
     timestamp: Date
     isStreaming?: boolean
+    functionCalls?: FunctionCall[]
+    functionResponses?: FunctionResponse[]
 }
 
 interface ChatSession {
@@ -232,6 +249,73 @@ function MarkdownRenderer({ content, isUser }: MarkdownRendererProps) {
     )
 }
 
+// MCP 함수 호출 결과 표시 컴포넌트
+function MCPFunctionDisplay({
+    functionCalls,
+    functionResponses
+}: {
+    functionCalls?: FunctionCall[]
+    functionResponses?: FunctionResponse[]
+}) {
+    if (!functionCalls?.length && !functionResponses?.length) {
+        return null
+    }
+
+    return (
+        <div className="space-y-2 mt-2">
+            {/* 함수 호출 표시 */}
+            {functionCalls?.map((call, index) => (
+                <Card
+                    key={`call-${index}`}
+                    className="border-blue-200 bg-blue-50 dark:bg-blue-950/30"
+                >
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center gap-2">
+                            <PlayCircle className="w-4 h-4 text-blue-600" />
+                            도구 호출: {call.name}
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                        <div className="text-xs font-mono bg-white dark:bg-gray-800 p-2 rounded border">
+                            <pre className="whitespace-pre-wrap">
+                                {JSON.stringify(call.arguments, null, 2)}
+                            </pre>
+                        </div>
+                    </CardContent>
+                </Card>
+            ))}
+
+            {/* 함수 응답 표시 */}
+            {functionResponses?.map((response, index) => (
+                <Card
+                    key={`response-${index}`}
+                    className="border-green-200 bg-green-50 dark:bg-green-950/30"
+                >
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4 text-green-600" />
+                            도구 응답: {response.name}
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                        <div className="text-xs font-mono bg-white dark:bg-gray-800 p-2 rounded border max-h-40 overflow-y-auto">
+                            <pre className="whitespace-pre-wrap">
+                                {typeof response.response === 'string'
+                                    ? response.response
+                                    : JSON.stringify(
+                                          response.response,
+                                          null,
+                                          2
+                                      )}
+                            </pre>
+                        </div>
+                    </CardContent>
+                </Card>
+            ))}
+        </div>
+    )
+}
+
 export default function ChatPage() {
     const [messages, setMessages] = useState<Message[]>([])
     const [inputValue, setInputValue] = useState('')
@@ -242,6 +326,7 @@ export default function ChatPage() {
     const [currentView, setCurrentView] = useState<'chat' | 'mcp-manager'>(
         'chat'
     )
+    const [mcpEnabled, setMcpEnabled] = useState(true)
     const messagesEndRef = useRef<HTMLDivElement>(null)
 
     // 채팅 제목 생성 함수
@@ -485,7 +570,8 @@ export default function ChatPage() {
                 },
                 body: JSON.stringify({
                     message: userMessage.content,
-                    history: recentMessages
+                    history: recentMessages,
+                    enableMCP: mcpEnabled
                 })
             })
 
@@ -501,6 +587,8 @@ export default function ChatPage() {
             }
 
             let accumulatedText = ''
+            const functionCalls: FunctionCall[] = []
+            const functionResponses: FunctionResponse[] = []
 
             while (true) {
                 const { done, value } = await reader.read()
@@ -519,7 +607,12 @@ export default function ChatPage() {
                             setMessages(prev =>
                                 prev.map(msg =>
                                     msg.id === aiMessage.id
-                                        ? { ...msg, isStreaming: false }
+                                        ? {
+                                              ...msg,
+                                              isStreaming: false,
+                                              functionCalls,
+                                              functionResponses
+                                          }
                                         : msg
                                 )
                             )
@@ -528,7 +621,8 @@ export default function ChatPage() {
 
                         try {
                             const parsed = JSON.parse(data)
-                            if (parsed.text) {
+
+                            if (parsed.type === 'text' && parsed.text) {
                                 accumulatedText += parsed.text
 
                                 // 실시간으로 AI 메시지 업데이트
@@ -537,7 +631,57 @@ export default function ChatPage() {
                                         msg.id === aiMessage.id
                                             ? {
                                                   ...msg,
-                                                  content: accumulatedText
+                                                  content: accumulatedText,
+                                                  functionCalls,
+                                                  functionResponses
+                                              }
+                                            : msg
+                                    )
+                                )
+                            } else if (
+                                parsed.type === 'function_call' &&
+                                parsed.function
+                            ) {
+                                functionCalls.push({
+                                    name: parsed.function.name,
+                                    arguments: parsed.function.arguments
+                                })
+
+                                // 함수 호출 정보 업데이트
+                                setMessages(prev =>
+                                    prev.map(msg =>
+                                        msg.id === aiMessage.id
+                                            ? {
+                                                  ...msg,
+                                                  content: accumulatedText,
+                                                  functionCalls: [
+                                                      ...functionCalls
+                                                  ],
+                                                  functionResponses
+                                              }
+                                            : msg
+                                    )
+                                )
+                            } else if (
+                                parsed.type === 'function_response' &&
+                                parsed.function
+                            ) {
+                                functionResponses.push({
+                                    name: parsed.function.name,
+                                    response: parsed.function.response
+                                })
+
+                                // 함수 응답 정보 업데이트
+                                setMessages(prev =>
+                                    prev.map(msg =>
+                                        msg.id === aiMessage.id
+                                            ? {
+                                                  ...msg,
+                                                  content: accumulatedText,
+                                                  functionCalls,
+                                                  functionResponses: [
+                                                      ...functionResponses
+                                                  ]
                                               }
                                             : msg
                                     )
@@ -699,7 +843,27 @@ export default function ChatPage() {
                                 ?.title || '새로운 채팅'}
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-3">
+                        {/* MCP 활성화/비활성화 토글 */}
+                        <div className="flex items-center gap-2">
+                            <label
+                                htmlFor="mcp-toggle"
+                                className="text-sm font-medium"
+                            >
+                                MCP 도구
+                            </label>
+                            <Switch
+                                id="mcp-toggle"
+                                checked={mcpEnabled}
+                                onCheckedChange={setMcpEnabled}
+                            />
+                            {mcpEnabled ? (
+                                <Zap className="w-4 h-4 text-green-500" />
+                            ) : (
+                                <ZapOff className="w-4 h-4 text-gray-400" />
+                            )}
+                        </div>
+
                         <Button
                             onClick={() =>
                                 setCurrentView(
@@ -814,6 +978,19 @@ export default function ChatPage() {
                                                     <Loader2 className="w-4 h-4 animate-spin mt-1 flex-shrink-0" />
                                                 )}
                                             </div>
+
+                                            {/* MCP 함수 호출 결과 표시 */}
+                                            {message.sender === 'ai' && (
+                                                <MCPFunctionDisplay
+                                                    functionCalls={
+                                                        message.functionCalls
+                                                    }
+                                                    functionResponses={
+                                                        message.functionResponses
+                                                    }
+                                                />
+                                            )}
+
                                             <time className="text-xs opacity-70 mt-1 block">
                                                 {message.timestamp.toLocaleTimeString()}
                                             </time>

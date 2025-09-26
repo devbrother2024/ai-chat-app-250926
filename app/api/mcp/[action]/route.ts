@@ -11,14 +11,34 @@ export async function POST(
         const body = await request.json()
 
         switch (action) {
+            case 'active-servers':
+                // 활성 MCP 서버 목록 반환
+                try {
+                    const activeServers = mcpServerManager.getActiveServers()
+                    return NextResponse.json({
+                        success: true,
+                        servers: activeServers
+                    })
+                } catch (error) {
+                    console.error('활성 서버 조회 오류:', error)
+                    return NextResponse.json(
+                        {
+                            success: false,
+                            error: '활성 서버 조회 실패'
+                        },
+                        { status: 500 }
+                    )
+                }
             case 'connect': {
                 const { server } = body
-                console.log(`MCP 연결 시도: ${server.name} (${server.transport})`)
-                
+                console.log(
+                    `MCP 연결 시도: ${server.name} (${server.transport})`
+                )
+
                 if (server.transport === 'http') {
                     console.log(`HTTP URL: ${server.url}`)
                 }
-                
+
                 await mcpServerManager.connect(server)
                 console.log(`MCP 연결 성공: ${server.name}`)
                 return NextResponse.json({ success: true })

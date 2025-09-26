@@ -57,12 +57,90 @@ export interface MCPServer {
     updatedAt: Date
 }
 
+// 전역 MCP 연결 관리를 위한 타입
+export interface GlobalMCPConnection {
+    serverId: string
+    client: Client
+    server: MCPServer
+    lastActivity: Date
+}
+
+// 전역 MCP 연결 풀
+declare global {
+    var mcpConnections: Map<string, GlobalMCPConnection> | undefined
+}
+
 export class MCPServerManager {
     private clients: Map<string, Client> = new Map()
     private transports: Map<
         string,
         StdioClientTransport | StreamableHTTPClientTransport
     > = new Map()
+
+    constructor() {
+        this.initializeGlobalConnections()
+    }
+
+    /**
+     * 전역 MCP 연결 풀 초기화
+     */
+    private initializeGlobalConnections(): void {
+        if (!global.mcpConnections) {
+            global.mcpConnections = new Map<string, GlobalMCPConnection>()
+        }
+    }
+
+    /**
+     * 전역 연결 풀에서 활성 연결 가져오기
+     */
+    getGlobalConnection(serverId: string): GlobalMCPConnection | undefined {
+        return global.mcpConnections?.get(serverId)
+    }
+
+    /**
+     * 전역 연결 풀에 연결 추가
+     */
+    private setGlobalConnection(connection: GlobalMCPConnection): void {
+        if (!global.mcpConnections) {
+            global.mcpConnections = new Map()
+        }
+        global.mcpConnections.set(connection.serverId, connection)
+    }
+
+    /**
+     * 전역 연결 풀에서 연결 제거
+     */
+    private removeGlobalConnection(serverId: string): void {
+        global.mcpConnections?.delete(serverId)
+    }
+
+    /**
+     * 모든 활성 MCP 클라이언트 가져오기 (AI 채팅에서 사용)
+     */
+    getAllActiveClients(): Client[] {
+        if (!global.mcpConnections) return []
+        return Array.from(global.mcpConnections.values()).map(
+            conn => conn.client
+        )
+    }
+
+    /**
+     * 활성 MCP 서버 정보 가져오기
+     */
+    getActiveServers(): MCPServer[] {
+        if (!global.mcpConnections) return []
+        return Array.from(global.mcpConnections.values()).map(
+            conn => conn.server
+        )
+    }
+
+    /**
+     * 특정 서버의 클라이언트 가져오기
+     */
+    getClient(serverId: string): Client | undefined {
+        const connection = this.getGlobalConnection(serverId)
+        return connection?.client
+    }
 
     /**
      * MCP 서버에 연결을 시도합니다
@@ -89,7 +167,7 @@ export class MCPServerManager {
                 let url: URL
                 try {
                     url = new URL(server.url)
-                } catch (urlError) {
+                } catch {
                     throw new Error(`유효하지 않은 URL입니다: ${server.url}`)
                 }
 
@@ -118,8 +196,18 @@ export class MCPServerManager {
 
             await connectWithTimeout
 
+            // 기존 연결 맵에 추가
             this.clients.set(server.id, client)
             this.transports.set(server.id, transport)
+
+            // 전역 연결 풀에 추가
+            const connection: GlobalMCPConnection = {
+                serverId: server.id,
+                client,
+                server,
+                lastActivity: new Date()
+            }
+            this.setGlobalConnection(connection)
         } catch (error) {
             throw error
         }
@@ -141,6 +229,9 @@ export class MCPServerManager {
             if (transport) {
                 this.transports.delete(serverId)
             }
+
+            // 전역 연결 풀에서 제거
+            this.removeGlobalConnection(serverId)
         } catch (error) {
             throw error
         }
