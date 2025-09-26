@@ -13,7 +13,14 @@ export async function POST(
         switch (action) {
             case 'connect': {
                 const { server } = body
+                console.log(`MCP 연결 시도: ${server.name} (${server.transport})`)
+                
+                if (server.transport === 'http') {
+                    console.log(`HTTP URL: ${server.url}`)
+                }
+                
                 await mcpServerManager.connect(server)
+                console.log(`MCP 연결 성공: ${server.name}`)
                 return NextResponse.json({ success: true })
             }
 

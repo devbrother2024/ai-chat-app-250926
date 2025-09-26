@@ -32,13 +32,21 @@ export interface MCPPrompt {
     }>
 }
 
+export type MCPTransportType = 'stdio' | 'http'
+
 export interface MCPServer {
     id: string
     name: string
     description?: string
-    command: string
+    transport: MCPTransportType
+    // stdio transport
+    command?: string
     args?: string[]
     env?: Record<string, string>
+    // http transport
+    url?: string
+    headers?: Record<string, string>
+    // common
     enabled: boolean
     connected: boolean
     status: 'connected' | 'disconnected' | 'error' | 'connecting'

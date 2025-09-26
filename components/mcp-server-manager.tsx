@@ -42,7 +42,7 @@ import {
 } from '@/components/ui/select'
 import { useMCPClient } from '@/hooks/use-mcp-client'
 import MCPServerDetails from './mcp-server-details'
-import type { MCPServer } from '@/lib/mcp-client'
+import type { MCPServer, MCPTransportType } from '@/lib/mcp-client'
 
 // 서버 통계 컴포넌트
 function ServerStats({
@@ -57,16 +57,21 @@ function ServerStats({
         tools: number
         prompts: number
         loading: boolean
+        loaded: boolean
     }>({
         resources: 0,
         tools: 0,
         prompts: 0,
-        loading: false
+        loading: false,
+        loaded: false
     })
 
     const { listResources, listTools, listPrompts } = useMCPClient()
 
     const fetchStats = useCallback(async () => {
+        // 이미 로드된 경우 다시 조회하지 않음
+        if (stats.loaded) return
+
         setStats(prev => ({ ...prev, loading: true }))
 
         try {
@@ -90,26 +95,28 @@ function ServerStats({
                     promptsResult.status === 'fulfilled'
                         ? promptsResult.value.length
                         : 0,
-                loading: false
+                loading: false,
+                loaded: true
             })
         } catch (error) {
             console.error('통계 조회 실패:', error)
             setStats(prev => ({ ...prev, loading: false }))
         }
-    }, [serverId, listResources, listTools, listPrompts])
+    }, [serverId, listResources, listTools, listPrompts, stats.loaded])
 
     useEffect(() => {
-        if (isConnected) {
+        if (isConnected && !stats.loaded) {
             fetchStats()
-        } else {
+        } else if (!isConnected) {
             setStats({
                 resources: 0,
                 tools: 0,
                 prompts: 0,
-                loading: false
+                loading: false,
+                loaded: false
             })
         }
-    }, [serverId, isConnected, fetchStats])
+    }, [isConnected, stats.loaded, fetchStats])
 
     if (stats.loading) {
         return (
@@ -140,34 +147,51 @@ function ServerStats({
 // 사전 정의된 MCP 서버 템플릿
 const SERVER_TEMPLATES = [
     {
-        name: 'File System',
+        name: 'File System (stdio)',
         description: '파일 시스템 접근을 위한 MCP 서버',
+        transport: 'stdio' as const,
         command: 'npx',
         args: ['@modelcontextprotocol/server-filesystem', '/path/to/directory']
     },
     {
-        name: 'SQLite',
+        name: 'SQLite (stdio)',
         description: 'SQLite 데이터베이스 접근을 위한 MCP 서버',
+        transport: 'stdio' as const,
         command: 'npx',
         args: ['@modelcontextprotocol/server-sqlite', '/path/to/database.db']
     },
     {
-        name: 'Git',
+        name: 'Git (stdio)',
         description: 'Git 저장소 관리를 위한 MCP 서버',
+        transport: 'stdio' as const,
         command: 'npx',
         args: ['@modelcontextprotocol/server-git', '/path/to/repo']
     },
     {
-        name: 'Browser',
+        name: 'Browser (stdio)',
         description: '웹 브라우저 자동화를 위한 MCP 서버',
+        transport: 'stdio' as const,
         command: 'npx',
         args: ['@modelcontextprotocol/server-browser']
     },
     {
-        name: 'Custom',
-        description: '사용자 정의 MCP 서버',
+        name: 'Smithery Server (StreamableHTTP)',
+        description: 'Smithery.ai StreamableHTTP MCP 서버',
+        transport: 'http' as const,
+        url: 'https://server.smithery.ai/@devbrother2024/typescript-mcp-server-boilerplate/mcp'
+    },
+    {
+        name: 'Custom stdio',
+        description: '사용자 정의 stdio MCP 서버',
+        transport: 'stdio' as const,
         command: '',
         args: []
+    },
+    {
+        name: 'Custom StreamableHTTP',
+        description: '사용자 정의 StreamableHTTP MCP 서버',
+        transport: 'http' as const,
+        url: ''
     }
 ]
 
@@ -234,9 +258,12 @@ function ServerForm({
     const [formData, setFormData] = useState({
         name: server?.name || '',
         description: server?.description || '',
+        transport: server?.transport || ('stdio' as MCPTransportType),
         command: server?.command || '',
         args: server?.args?.join(' ') || '',
         env: JSON.stringify(server?.env || {}, null, 2),
+        url: server?.url || '',
+        headers: JSON.stringify(server?.headers || {}, null, 2),
         enabled: server?.enabled ?? true
     })
     const [selectedTemplate, setSelectedTemplate] = useState('')
@@ -246,10 +273,15 @@ function ServerForm({
         if (template) {
             setFormData(prev => ({
                 ...prev,
-                name: template.name !== 'Custom' ? template.name : prev.name,
+                name: !template.name.startsWith('Custom')
+                    ? template.name
+                    : prev.name,
                 description: template.description,
-                command: template.command,
-                args: template.args.join(' ')
+                transport: template.transport,
+                command: template.command || '',
+                args: template.args?.join(' ') || '',
+                url: template.url || '',
+                headers: JSON.stringify({}, null, 2)
             }))
         }
     }
@@ -259,6 +291,9 @@ function ServerForm({
 
         try {
             const envObj = formData.env.trim() ? JSON.parse(formData.env) : {}
+            const headersObj = formData.headers.trim()
+                ? JSON.parse(formData.headers)
+                : {}
             const argsArray = formData.args.trim()
                 ? formData.args.split(' ').filter(arg => arg.trim())
                 : []
@@ -266,9 +301,29 @@ function ServerForm({
             onSave({
                 name: formData.name.trim(),
                 description: formData.description.trim() || undefined,
-                command: formData.command.trim(),
-                args: argsArray.length > 0 ? argsArray : undefined,
-                env: Object.keys(envObj).length > 0 ? envObj : undefined,
+                transport: formData.transport,
+                command:
+                    formData.transport === 'stdio'
+                        ? formData.command.trim()
+                        : undefined,
+                args:
+                    formData.transport === 'stdio' && argsArray.length > 0
+                        ? argsArray
+                        : undefined,
+                env:
+                    formData.transport === 'stdio' &&
+                    Object.keys(envObj).length > 0
+                        ? envObj
+                        : undefined,
+                url:
+                    formData.transport === 'http'
+                        ? formData.url.trim()
+                        : undefined,
+                headers:
+                    formData.transport === 'http' &&
+                    Object.keys(headersObj).length > 0
+                        ? headersObj
+                        : undefined,
                 enabled: formData.enabled,
                 lastConnected: server?.lastConnected
             })
@@ -336,46 +391,113 @@ function ServerForm({
             </div>
 
             <div className="space-y-2">
-                <Label htmlFor="command">실행 명령어 *</Label>
-                <Input
-                    id="command"
-                    value={formData.command}
-                    onChange={e =>
-                        setFormData(prev => ({
-                            ...prev,
-                            command: e.target.value
-                        }))
+                <Label htmlFor="transport">연결 방식 *</Label>
+                <Select
+                    value={formData.transport}
+                    onValueChange={(value: MCPTransportType) =>
+                        setFormData(prev => ({ ...prev, transport: value }))
                     }
-                    placeholder="예: npx, python, node"
-                    required
-                />
+                >
+                    <SelectTrigger>
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="stdio">stdio (프로세스)</SelectItem>
+                        <SelectItem value="http">
+                            HTTP (StreamableHTTP)
+                        </SelectItem>
+                    </SelectContent>
+                </Select>
             </div>
 
-            <div className="space-y-2">
-                <Label htmlFor="args">명령어 인수</Label>
-                <Input
-                    id="args"
-                    value={formData.args}
-                    onChange={e =>
-                        setFormData(prev => ({ ...prev, args: e.target.value }))
-                    }
-                    placeholder="예: @modelcontextprotocol/server-filesystem /path/to/directory"
-                />
-            </div>
+            {formData.transport === 'stdio' && (
+                <>
+                    <div className="space-y-2">
+                        <Label htmlFor="command">실행 명령어 *</Label>
+                        <Input
+                            id="command"
+                            value={formData.command}
+                            onChange={e =>
+                                setFormData(prev => ({
+                                    ...prev,
+                                    command: e.target.value
+                                }))
+                            }
+                            placeholder="예: npx, python, node"
+                            required
+                        />
+                    </div>
 
-            <div className="space-y-2">
-                <Label htmlFor="env">환경 변수 (JSON)</Label>
-                <Textarea
-                    id="env"
-                    value={formData.env}
-                    onChange={e =>
-                        setFormData(prev => ({ ...prev, env: e.target.value }))
-                    }
-                    placeholder='{"KEY": "value"}'
-                    rows={3}
-                    className="font-mono text-sm"
-                />
-            </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="args">명령어 인수</Label>
+                        <Input
+                            id="args"
+                            value={formData.args}
+                            onChange={e =>
+                                setFormData(prev => ({
+                                    ...prev,
+                                    args: e.target.value
+                                }))
+                            }
+                            placeholder="예: @modelcontextprotocol/server-filesystem /path/to/directory"
+                        />
+                    </div>
+
+                    <div className="space-y-2">
+                        <Label htmlFor="env">환경 변수 (JSON)</Label>
+                        <Textarea
+                            id="env"
+                            value={formData.env}
+                            onChange={e =>
+                                setFormData(prev => ({
+                                    ...prev,
+                                    env: e.target.value
+                                }))
+                            }
+                            placeholder='{"KEY": "value"}'
+                            rows={3}
+                            className="font-mono text-sm"
+                        />
+                    </div>
+                </>
+            )}
+
+            {formData.transport === 'http' && (
+                <>
+                    <div className="space-y-2">
+                        <Label htmlFor="url">서버 URL *</Label>
+                        <Input
+                            id="url"
+                            value={formData.url}
+                            onChange={e =>
+                                setFormData(prev => ({
+                                    ...prev,
+                                    url: e.target.value
+                                }))
+                            }
+                            placeholder="예: https://server.example.com/mcp"
+                            required
+                        />
+                    </div>
+
+                    <div className="space-y-2">
+                        <Label htmlFor="headers">HTTP 헤더 (JSON)</Label>
+                        <Textarea
+                            id="headers"
+                            value={formData.headers}
+                            onChange={e =>
+                                setFormData(prev => ({
+                                    ...prev,
+                                    headers: e.target.value
+                                }))
+                            }
+                            placeholder='{"Authorization": "Bearer token", "Content-Type": "application/json"}'
+                            rows={3}
+                            className="font-mono text-sm"
+                        />
+                    </div>
+                </>
+            )}
 
             <div className="flex items-center space-x-2">
                 <Switch
@@ -718,11 +840,28 @@ export default function MCPServerManager() {
                                 </div>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                <div className="text-sm">
-                                    <div className="font-mono bg-muted p-2 rounded text-xs">
-                                        {server.command}{' '}
-                                        {server.args?.join(' ')}
+                                <div className="text-sm space-y-2">
+                                    <div className="flex items-center gap-2 text-xs">
+                                        <Badge
+                                            variant="outline"
+                                            className="text-xs"
+                                        >
+                                            {server.transport === 'stdio'
+                                                ? 'stdio'
+                                                : 'StreamableHTTP'}
+                                        </Badge>
                                     </div>
+
+                                    {server.transport === 'stdio' ? (
+                                        <div className="font-mono bg-muted p-2 rounded text-xs">
+                                            {server.command}{' '}
+                                            {server.args?.join(' ')}
+                                        </div>
+                                    ) : (
+                                        <div className="font-mono bg-muted p-2 rounded text-xs break-all">
+                                            {server.url}
+                                        </div>
+                                    )}
                                 </div>
 
                                 {server.lastConnected && (

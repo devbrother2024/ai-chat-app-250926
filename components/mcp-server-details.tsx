@@ -42,6 +42,7 @@ export default function MCPServerDetails({ server }: MCPServerDetailsProps) {
     const [resources, setResources] = useState<MCPResource[]>([])
     const [tools, setTools] = useState<MCPTool[]>([])
     const [prompts, setPrompts] = useState<MCPPrompt[]>([])
+    const [loaded, setLoaded] = useState(false)
     const [selectedTool, setSelectedTool] = useState<MCPTool | null>(null)
     const [toolArgs, setToolArgs] = useState<string>('{}')
     const [toolResult, setToolResult] = useState<unknown>(null)
@@ -66,51 +67,6 @@ export default function MCPServerDetails({ server }: MCPServerDetailsProps) {
         getPrompt,
         clearError
     } = useMCPClient()
-
-    // 서버 정보 새로고침
-    const refreshServerInfo = useCallback(async () => {
-        if (!server.connected) {
-            return
-        }
-
-        clearError()
-
-        try {
-            const [resourcesResult, toolsResult, promptsResult] =
-                await Promise.allSettled([
-                    listResources(server.id),
-                    listTools(server.id),
-                    listPrompts(server.id)
-                ])
-
-            if (resourcesResult.status === 'fulfilled') {
-                setResources(resourcesResult.value)
-            } else {
-                console.error('리소스 조회 실패:', resourcesResult.reason)
-            }
-
-            if (toolsResult.status === 'fulfilled') {
-                setTools(toolsResult.value)
-            } else {
-                console.error('도구 조회 실패:', toolsResult.reason)
-            }
-
-            if (promptsResult.status === 'fulfilled') {
-                setPrompts(promptsResult.value)
-            } else {
-                console.error('프롬프트 조회 실패:', promptsResult.reason)
-            }
-        } catch (err) {
-            console.error('정보 조회 실패:', err)
-        }
-    }, [
-        server.connected,
-        server.id,
-        listResources,
-        listTools,
-        listPrompts,
-        clearError
-    ])
 
     // 도구 실행
     const executeTool = async () => {
@@ -184,15 +140,66 @@ export default function MCPServerDetails({ server }: MCPServerDetailsProps) {
     }
 
     // 서버 연결 상태가 변경될 때마다 정보 새로고침
+    const loadServerInfo = useCallback(async () => {
+        if (!server.connected) return
+
+        clearError()
+
+        try {
+            const [resourcesResult, toolsResult, promptsResult] =
+                await Promise.allSettled([
+                    listResources(server.id),
+                    listTools(server.id),
+                    listPrompts(server.id)
+                ])
+
+            if (resourcesResult.status === 'fulfilled') {
+                setResources(resourcesResult.value)
+            } else {
+                console.error('리소스 조회 실패:', resourcesResult.reason)
+            }
+
+            if (toolsResult.status === 'fulfilled') {
+                setTools(toolsResult.value)
+            } else {
+                console.error('도구 조회 실패:', toolsResult.reason)
+            }
+
+            if (promptsResult.status === 'fulfilled') {
+                setPrompts(promptsResult.value)
+            } else {
+                console.error('프롬프트 조회 실패:', promptsResult.reason)
+            }
+
+            setLoaded(true)
+        } catch (err) {
+            console.error('정보 조회 실패:', err)
+        }
+    }, [
+        server.connected,
+        server.id,
+        listResources,
+        listTools,
+        listPrompts,
+        clearError
+    ])
+
+    // 강제 새로고침 함수
+    const refreshServerInfo = useCallback(async () => {
+        setLoaded(false)
+        await loadServerInfo()
+    }, [loadServerInfo])
+
     useEffect(() => {
-        if (server.connected) {
-            refreshServerInfo()
-        } else {
+        if (server.connected && !loaded) {
+            loadServerInfo()
+        } else if (!server.connected) {
             setResources([])
             setTools([])
             setPrompts([])
+            setLoaded(false)
         }
-    }, [server.connected, server.id, refreshServerInfo])
+    }, [server.connected, loaded, loadServerInfo])
 
     if (!server.connected) {
         return (

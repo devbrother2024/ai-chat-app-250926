@@ -53,7 +53,42 @@ pnpm dev
 1. 상단 헤더의 서버 아이콘을 클릭하여 MCP 서버 관리 페이지로 이동
 2. "서버 추가" 버튼을 클릭하여 새 MCP 서버 등록
 3. 템플릿을 선택하거나 직접 설정하여 서버 구성
-4. 서버 활성화 후 연결 버튼을 클릭하여 연결
+4. 서버 활성화 후 연결 버튼을 클릭하여 **실제 MCP 서버에 연결**
+
+### 실제 MCP 서버 연결
+
+현재 애플리케이션은 **실제 MCP 서버**와 연결하도록 구성되어 있습니다:
+
+-   **브라우저**: API 호출을 통해 서버와 통신
+-   **서버 사이드**: 실제 MCP TypeScript SDK 사용
+-   **리소스 읽기**: 실제 MCP 서버의 리소스 내용 표시
+-   **도구 실행**: 실제 MCP 도구 실행 및 결과 반환
+
+### 지원하는 연결 방식
+
+#### stdio Transport (프로세스 기반)
+
+로컬에서 실행되는 MCP 서버와 프로세스를 통해 연결:
+
+```bash
+# 예시: 파일 시스템 MCP 서버
+npx @modelcontextprotocol/server-filesystem /path/to/directory
+
+# 예시: Git MCP 서버
+npx @modelcontextprotocol/server-git /path/to/git/repo
+```
+
+#### HTTP Transport (웹 서버 기반)
+
+StreamableHTTP를 통해 원격 MCP 서버와 연결:
+
+```
+# 예시: Smithery.ai HTTP MCP 서버
+https://server.smithery.ai/@devbrother2024/typescript-mcp-server-boilerplate/mcp
+
+# 예시: 커스텀 HTTP MCP 서버
+https://your-mcp-server.com/mcp
+```
 
 ## 기술 스택
 

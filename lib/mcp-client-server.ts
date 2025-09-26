@@ -1,6 +1,7 @@
 // 서버 전용 MCP 클라이언트
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 export interface MCPClientStatus {
     connected: boolean
@@ -32,13 +33,21 @@ export interface MCPPrompt {
     }>
 }
 
+export type MCPTransportType = 'stdio' | 'http'
+
 export interface MCPServer {
     id: string
     name: string
     description?: string
-    command: string
+    transport: MCPTransportType
+    // stdio transport
+    command?: string
     args?: string[]
     env?: Record<string, string>
+    // http transport
+    url?: string
+    headers?: Record<string, string>
+    // common
     enabled: boolean
     connected: boolean
     status: 'connected' | 'disconnected' | 'error' | 'connecting'
@@ -50,25 +59,64 @@ export interface MCPServer {
 
 export class MCPServerManager {
     private clients: Map<string, Client> = new Map()
-    private transports: Map<string, StdioClientTransport> = new Map()
+    private transports: Map<
+        string,
+        StdioClientTransport | StreamableHTTPClientTransport
+    > = new Map()
 
     /**
      * MCP 서버에 연결을 시도합니다
      */
     async connect(server: MCPServer): Promise<void> {
         try {
-            const transport = new StdioClientTransport({
-                command: server.command,
-                args: server.args || [],
-                env: server.env
-            })
+            let transport: StdioClientTransport | StreamableHTTPClientTransport
+
+            if (server.transport === 'stdio') {
+                if (!server.command) {
+                    throw new Error('stdio transport에는 command가 필요합니다')
+                }
+                transport = new StdioClientTransport({
+                    command: server.command,
+                    args: server.args || [],
+                    env: server.env
+                })
+            } else if (server.transport === 'http') {
+                if (!server.url) {
+                    throw new Error('http transport에는 url이 필요합니다')
+                }
+
+                // URL 유효성 검사
+                let url: URL
+                try {
+                    url = new URL(server.url)
+                } catch (urlError) {
+                    throw new Error(`유효하지 않은 URL입니다: ${server.url}`)
+                }
+
+                transport = new StreamableHTTPClientTransport(url)
+            } else {
+                throw new Error(
+                    `지원하지 않는 transport 타입: ${server.transport}`
+                )
+            }
 
             const client = new Client({
                 name: 'ai-chat-app-mcp-client',
                 version: '1.0.0'
             })
 
-            await client.connect(transport)
+            // 연결 타임아웃 설정 (30초)
+            const connectWithTimeout = Promise.race([
+                client.connect(transport),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error('연결 타임아웃 (30초)')),
+                        30000
+                    )
+                )
+            ])
+
+            await connectWithTimeout
 
             this.clients.set(server.id, client)
             this.transports.set(server.id, transport)
@@ -146,6 +194,11 @@ export class MCPServerManager {
                 mimeType: resource.mimeType
             }))
         } catch (error) {
+            // Method not found 에러인 경우 빈 배열 반환
+            if (error instanceof Error && error.message.includes('-32601')) {
+                console.log(`서버 ${serverId}는 resources를 지원하지 않습니다`)
+                return []
+            }
             throw new Error(
                 `리소스 목록 조회 실패: ${
                     error instanceof Error ? error.message : '알 수 없는 오류'
@@ -171,6 +224,11 @@ export class MCPServerManager {
                 inputSchema: tool.inputSchema
             }))
         } catch (error) {
+            // Method not found 에러인 경우 빈 배열 반환
+            if (error instanceof Error && error.message.includes('-32601')) {
+                console.log(`서버 ${serverId}는 tools를 지원하지 않습니다`)
+                return []
+            }
             throw new Error(
                 `도구 목록 조회 실패: ${
                     error instanceof Error ? error.message : '알 수 없는 오류'
@@ -196,6 +254,11 @@ export class MCPServerManager {
                 arguments: prompt.arguments
             }))
         } catch (error) {
+            // Method not found 에러인 경우 빈 배열 반환
+            if (error instanceof Error && error.message.includes('-32601')) {
+                console.log(`서버 ${serverId}는 prompts를 지원하지 않습니다`)
+                return []
+            }
             throw new Error(
                 `프롬프트 목록 조회 실패: ${
                     error instanceof Error ? error.message : '알 수 없는 오류'
