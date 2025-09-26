@@ -28,6 +28,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
 import MCPServerManager from '@/components/mcp-server-manager'
+import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
+import { UserProfile } from '@/components/auth/UserProfile'
 
 interface FunctionCall {
     name: string
@@ -316,7 +318,7 @@ function MCPFunctionDisplay({
     )
 }
 
-export default function ChatPage() {
+function ChatPage() {
     const [messages, setMessages] = useState<Message[]>([])
     const [inputValue, setInputValue] = useState('')
     const [isLoading, setIsLoading] = useState(false)
@@ -890,6 +892,7 @@ export default function ChatPage() {
                                 <Trash2 className="w-5 h-5" />
                             </Button>
                         )}
+                        <UserProfile />
                         <Button variant="ghost" size="icon" aria-label="설정">
                             <Settings className="w-5 h-5" />
                         </Button>
@@ -1060,5 +1063,13 @@ export default function ChatPage() {
                 )}
             </div>
         </div>
+    )
+}
+
+export default function Page() {
+    return (
+        <ProtectedRoute>
+            <ChatPage />
+        </ProtectedRoute>
     )
 }

@@ -2,6 +2,16 @@
     "mcpServers": {
         "context7": {
             "url": "https://mcp.context7.com/mcp"
+        },
+        "supabase": {
+            "command": "npx",
+            "args": [
+                "@supabase/mcp-server-supabase",
+                "--project-ref=filxeuzdptnovxhqikjb"
+            ],
+            "env": {
+                "SUPABASE_ACCESS_TOKEN": "sbp_8e9646e6d7ebe3ebde97595a09fda5318eb34be3"
+            }
         }
     }
 }

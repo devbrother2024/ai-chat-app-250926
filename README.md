@@ -4,6 +4,13 @@ AI 모델과 MCP(Model Context Protocol) 서버를 통합한 채팅 애플리케
 
 ## 주요 기능
 
+### 🔐 사용자 인증 (Supabase Auth)
+
+-   **이메일 회원가입/로그인**: 안전한 이메일 기반 인증
+-   **세션 관리**: 자동 세션 유지 및 갱신
+-   **보안**: JWT 토큰 기반 인증으로 안전한 사용자 관리
+-   **인증 보호**: 인증된 사용자만 채팅 서비스에 접근 가능
+
 ### 🤖 AI 채팅
 
 -   **스트리밍 응답**: 실시간으로 AI 응답을 받아볼 수 있습니다
@@ -26,13 +33,21 @@ AI 모델과 MCP(Model Context Protocol) 서버를 통합한 채팅 애플리케
 1. 환경 변수 설정:
 
 ```bash
-cp .env.local.example .env.local
+cp .env.example .env.local
 ```
 
-2. Gemini API 키 설정:
+2. Supabase 프로젝트 생성 및 설정:
+
+    - [Supabase](https://app.supabase.com)에서 새 프로젝트 생성
+    - 프로젝트 설정 > API에서 URL과 anon key 복사
+    - 이메일 인증 활성화 (Authentication > Settings)
+
+3. 환경 변수 설정:
 
 ```bash
 # .env.local 파일에 추가
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
@@ -94,6 +109,7 @@ https://your-mcp-server.com/mcp
 
 -   **Frontend**: Next.js 15, React 19, TypeScript
 -   **UI**: Tailwind CSS, shadcn/ui
+-   **Authentication**: Supabase Auth
 -   **MCP**: @modelcontextprotocol/sdk
 -   **AI**: Gemini API
 -   **Storage**: localStorage (MVP)
