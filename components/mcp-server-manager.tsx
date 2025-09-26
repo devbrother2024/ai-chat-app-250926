@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
     Server,
     Plus,
@@ -10,7 +10,12 @@ import {
     PowerOff,
     CheckCircle,
     XCircle,
-    AlertCircle
+    AlertCircle,
+    Eye,
+    ArrowLeft,
+    Folder,
+    Wrench,
+    MessageSquare
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,22 +40,101 @@ import {
     SelectTrigger,
     SelectValue
 } from '@/components/ui/select'
+import { useMCPClient } from '@/hooks/use-mcp-client'
+import MCPServerDetails from './mcp-server-details'
+import type { MCPServer } from '@/lib/mcp-client'
 
-// MCP 서버 타입 정의
-interface MCPServer {
-    id: string
-    name: string
-    description?: string
-    command: string
-    args?: string[]
-    env?: Record<string, string>
-    enabled: boolean
-    connected: boolean
-    status: 'connected' | 'disconnected' | 'error' | 'connecting'
-    lastConnected?: Date
-    errorMessage?: string
-    createdAt: Date
-    updatedAt: Date
+// 서버 통계 컴포넌트
+function ServerStats({
+    serverId,
+    isConnected
+}: {
+    serverId: string
+    isConnected: boolean
+}) {
+    const [stats, setStats] = useState<{
+        resources: number
+        tools: number
+        prompts: number
+        loading: boolean
+    }>({
+        resources: 0,
+        tools: 0,
+        prompts: 0,
+        loading: false
+    })
+
+    const { listResources, listTools, listPrompts } = useMCPClient()
+
+    const fetchStats = useCallback(async () => {
+        setStats(prev => ({ ...prev, loading: true }))
+
+        try {
+            const [resourcesResult, toolsResult, promptsResult] =
+                await Promise.allSettled([
+                    listResources(serverId),
+                    listTools(serverId),
+                    listPrompts(serverId)
+                ])
+
+            setStats({
+                resources:
+                    resourcesResult.status === 'fulfilled'
+                        ? resourcesResult.value.length
+                        : 0,
+                tools:
+                    toolsResult.status === 'fulfilled'
+                        ? toolsResult.value.length
+                        : 0,
+                prompts:
+                    promptsResult.status === 'fulfilled'
+                        ? promptsResult.value.length
+                        : 0,
+                loading: false
+            })
+        } catch (error) {
+            console.error('통계 조회 실패:', error)
+            setStats(prev => ({ ...prev, loading: false }))
+        }
+    }, [serverId, listResources, listTools, listPrompts])
+
+    useEffect(() => {
+        if (isConnected) {
+            fetchStats()
+        } else {
+            setStats({
+                resources: 0,
+                tools: 0,
+                prompts: 0,
+                loading: false
+            })
+        }
+    }, [serverId, isConnected, fetchStats])
+
+    if (stats.loading) {
+        return (
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                <div className="animate-pulse">통계 로딩 중...</div>
+            </div>
+        )
+    }
+
+    return (
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1">
+                <Folder className="w-3 h-3" />
+                <span>{stats.resources}</span>
+            </div>
+            <div className="flex items-center gap-1">
+                <Wrench className="w-3 h-3" />
+                <span>{stats.tools}</span>
+            </div>
+            <div className="flex items-center gap-1">
+                <MessageSquare className="w-3 h-3" />
+                <span>{stats.prompts}</span>
+            </div>
+        </div>
+    )
 }
 
 // 사전 정의된 MCP 서버 템플릿
@@ -320,6 +404,9 @@ export default function MCPServerManager() {
     const [isDialogOpen, setIsDialogOpen] = useState(false)
     const [editingServer, setEditingServer] = useState<MCPServer | null>(null)
     const [isLoading, setIsLoading] = useState(false)
+    const [viewingServer, setViewingServer] = useState<MCPServer | null>(null)
+
+    const { connectServer, disconnectServer } = useMCPClient()
 
     // localStorage에서 서버 목록 로드
     useEffect(() => {
@@ -336,10 +423,14 @@ export default function MCPServerManager() {
                         : undefined
                 }))
                 setServers(serversWithDate)
+
+                // 서버 상태 업데이트는 개별 연결/해제 시 처리
             } catch (error) {
                 console.error('서버 목록 로드 실패:', error)
             }
         }
+
+        // 컴포넌트 언마운트 시 정리는 개별 API 호출로 처리
     }, [])
 
     // 서버 목록을 localStorage에 저장
@@ -363,6 +454,8 @@ export default function MCPServerManager() {
             createdAt: new Date(),
             updatedAt: new Date()
         }
+
+        // 새 서버 상태는 연결 시 자동으로 업데이트됩니다
 
         const updatedServers = [...servers, newServer]
         saveServers(updatedServers)
@@ -392,8 +485,19 @@ export default function MCPServerManager() {
     }
 
     // 서버 삭제
-    const handleDeleteServer = (serverId: string) => {
+    const handleDeleteServer = async (serverId: string) => {
         if (confirm('정말로 이 서버를 삭제하시겠습니까?')) {
+            const server = servers.find(s => s.id === serverId)
+
+            // 연결되어 있다면 먼저 해제
+            if (server?.connected) {
+                try {
+                    await disconnectServer(serverId)
+                } catch (error) {
+                    console.error('연결 해제 실패:', error)
+                }
+            }
+
             const updatedServers = servers.filter(
                 server => server.id !== serverId
             )
@@ -401,57 +505,130 @@ export default function MCPServerManager() {
         }
     }
 
-    // 서버 연결/연결 해제 (현재는 UI만 구현)
+    // 서버 연결/연결 해제
     const handleToggleConnection = async (serverId: string) => {
         setIsLoading(true)
 
         const server = servers.find(s => s.id === serverId)
+        if (!server) {
+            setIsLoading(false)
+            return
+        }
+
+        try {
+            if (server.connected) {
+                // 연결 해제
+                await disconnectServer(serverId)
+                // 성공 시 서버 상태 업데이트
+                setServers(prev =>
+                    prev.map(s =>
+                        s.id === serverId
+                            ? {
+                                  ...s,
+                                  connected: false,
+                                  status: 'disconnected' as const
+                              }
+                            : s
+                    )
+                )
+            } else {
+                // 연결 시도
+                await connectServer(server)
+                // 성공 시 서버 상태 업데이트
+                setServers(prev =>
+                    prev.map(s =>
+                        s.id === serverId
+                            ? {
+                                  ...s,
+                                  connected: true,
+                                  status: 'connected' as const,
+                                  lastConnected: new Date()
+                              }
+                            : s
+                    )
+                )
+            }
+        } catch (error) {
+            console.error('연결 토글 실패:', error)
+            // 실패 시 오류 상태로 업데이트
+            setServers(prev =>
+                prev.map(s =>
+                    s.id === serverId
+                        ? {
+                              ...s,
+                              connected: false,
+                              status: 'error' as const,
+                              errorMessage:
+                                  error instanceof Error
+                                      ? error.message
+                                      : '연결 실패'
+                          }
+                        : s
+                )
+            )
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    // 서버 활성화/비활성화 토글
+    const handleToggleEnabled = async (serverId: string) => {
+        const server = servers.find(s => s.id === serverId)
         if (!server) return
 
-        // TODO: 실제 MCP 클라이언트 구현 시 여기에 연결 로직 추가
+        const newEnabled = !server.enabled
 
-        // 현재는 시뮬레이션
+        // 비활성화하는 경우 연결도 해제
+        if (!newEnabled && server.connected) {
+            try {
+                await disconnectServer(serverId)
+            } catch (error) {
+                console.error('연결 해제 실패:', error)
+            }
+        }
+
         const updatedServers = servers.map(s => {
             if (s.id === serverId) {
-                const newConnected = !s.connected
                 return {
                     ...s,
-                    connected: newConnected,
-                    status: newConnected
-                        ? ('connected' as const)
-                        : ('disconnected' as const),
-                    lastConnected: newConnected ? new Date() : s.lastConnected,
-                    errorMessage: undefined
+                    enabled: newEnabled,
+                    connected: newEnabled ? s.connected : false,
+                    status: newEnabled ? s.status : ('disconnected' as const),
+                    updatedAt: new Date()
                 }
             }
             return s
         })
-
-        // 연결 지연 시뮬레이션
-        setTimeout(() => {
-            saveServers(updatedServers)
-            setIsLoading(false)
-        }, 1000)
+        saveServers(updatedServers)
     }
 
-    // 서버 활성화/비활성화 토글
-    const handleToggleEnabled = (serverId: string) => {
-        const updatedServers = servers.map(server => {
-            if (server.id === serverId) {
-                const newEnabled = !server.enabled
-                return {
-                    ...server,
-                    enabled: newEnabled,
-                    connected: newEnabled ? server.connected : false,
-                    status: newEnabled
-                        ? server.status
-                        : ('disconnected' as const),
-                    updatedAt: new Date()
-                }
-            }
-            return server
-        })
-        saveServers(updatedServers)
+    // 서버 세부 정보 보기 화면
+    if (viewingServer) {
+        return (
+            <div className="container mx-auto p-6 space-y-6">
+                <div className="flex items-center gap-4">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setViewingServer(null)}
+                        className="flex items-center gap-2"
+                    >
+                        <ArrowLeft className="w-4 h-4" />
+                        뒤로 가기
+                    </Button>
+                    <div>
+                        <h1 className="text-2xl font-bold flex items-center gap-2">
+                            <Server className="w-6 h-6" />
+                            MCP 서버 관리
+                        </h1>
+                        <p className="text-muted-foreground mt-1">
+                            서버 세부 정보 및 도구 관리
+                        </p>
+                    </div>
+                </div>
+                <MCPServerDetails server={viewingServer} />
+            </div>
+        )
     }
 
     return (
@@ -555,6 +732,15 @@ export default function MCPServerManager() {
                                     </div>
                                 )}
 
+                                {server.connected && (
+                                    <div className="mt-2">
+                                        <ServerStats
+                                            serverId={server.id}
+                                            isConnected={server.connected}
+                                        />
+                                    </div>
+                                )}
+
                                 {server.errorMessage && (
                                     <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-2 rounded">
                                         {server.errorMessage}
@@ -594,8 +780,19 @@ export default function MCPServerManager() {
                                             variant="ghost"
                                             size="sm"
                                             onClick={() =>
+                                                setViewingServer(server)
+                                            }
+                                            title="세부 정보 보기"
+                                        >
+                                            <Eye className="w-4 h-4" />
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() =>
                                                 setEditingServer(server)
                                             }
+                                            title="서버 편집"
                                         >
                                             <Edit3 className="w-4 h-4" />
                                         </Button>
@@ -606,6 +803,7 @@ export default function MCPServerManager() {
                                                 handleDeleteServer(server.id)
                                             }
                                             disabled={server.connected}
+                                            title="서버 삭제"
                                         >
                                             <Trash2 className="w-4 h-4" />
                                         </Button>
