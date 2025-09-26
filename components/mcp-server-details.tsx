@@ -141,7 +141,7 @@ export default function MCPServerDetails({ server }: MCPServerDetailsProps) {
         try {
             const result = await readResource(server.id, resource.uri)
             if (result && typeof result === 'object' && 'contents' in result) {
-                const contents = (result as any).contents
+                const contents = (result as { contents: unknown }).contents
                 if (Array.isArray(contents) && contents.length > 0) {
                     setResourceContent(
                         contents[0].text || JSON.stringify(contents[0], null, 2)

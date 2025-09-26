@@ -67,7 +67,7 @@ export function useMCPClient() {
     )
 
     const getServerStatus = useCallback(
-        async (serverId: string): Promise<MCPClientStatus> => {
+        async (_serverId: string): Promise<MCPClientStatus> => {
             try {
                 // 브라우저에서는 시뮬레이션 상태 반환
                 await simulateDelay(200)
@@ -215,8 +215,11 @@ export function useMCPClient() {
                             {
                                 type: 'text',
                                 text: `Echo: ${
-                                    (args as any)?.message ||
-                                    'No message provided'
+                                    args &&
+                                    typeof args === 'object' &&
+                                    'message' in args
+                                        ? String(args.message)
+                                        : 'No message provided'
                                 }`
                             }
                         ]
@@ -227,7 +230,11 @@ export function useMCPClient() {
                             {
                                 type: 'text',
                                 text: `계산 결과: ${
-                                    (args as any)?.expression
+                                    args &&
+                                    typeof args === 'object' &&
+                                    'expression' in args
+                                        ? String(args.expression)
+                                        : '계산식 없음'
                                 } = (시뮬레이션 결과)`
                             }
                         ]
@@ -297,8 +304,14 @@ export function useMCPClient() {
                 )
 
                 if (promptName === 'greeting') {
-                    const name = (args as any)?.name || 'Anonymous'
-                    const time = (args as any)?.time || 'day'
+                    const name =
+                        args && typeof args === 'object' && 'name' in args
+                            ? String(args.name)
+                            : 'Anonymous'
+                    const time =
+                        args && typeof args === 'object' && 'time' in args
+                            ? String(args.time)
+                            : 'day'
                     return {
                         description: '인사말 프롬프트',
                         messages: [
