@@ -30,38 +30,25 @@ import { Switch } from '@/components/ui/switch'
 import MCPServerManager from '@/components/mcp-server-manager'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { UserProfile } from '@/components/auth/UserProfile'
+import { useAuth } from '@/contexts/AuthContext'
+import {
+    createChatSession,
+    getChatSessions,
+    updateChatSession,
+    deleteChatSession,
+    saveMessage,
+    clearSessionMessages,
+    type ChatSession as DBChatSession,
+    type Message as DBMessage
+} from '@/lib/database-client'
 
-interface FunctionCall {
-    name: string
-    arguments: Record<string, unknown>
-}
+// 데이터베이스 타입을 사용 (호환성 유지)
+type FunctionCall = NonNullable<DBMessage['functionCalls']>[0]
+type FunctionResponse = NonNullable<DBMessage['functionResponses']>[0]
+type Message = DBMessage
+type ChatSession = DBChatSession
 
-interface FunctionResponse {
-    name: string
-    response: unknown
-}
-
-interface Message {
-    id: string
-    content: string
-    sender: 'user' | 'ai'
-    timestamp: Date
-    isStreaming?: boolean
-    functionCalls?: FunctionCall[]
-    functionResponses?: FunctionResponse[]
-}
-
-interface ChatSession {
-    id: string
-    title: string
-    messages: Message[]
-    createdAt: Date
-    updatedAt: Date
-}
-
-const STORAGE_KEY = 'ai-chat-history'
-const SESSIONS_STORAGE_KEY = 'ai-chat-sessions'
-const CURRENT_SESSION_KEY = 'ai-current-session'
+// 로컬 스토리지는 더 이상 사용하지 않음 (데이터베이스로 마이그레이션됨)
 
 // 마크다운 렌더링 컴포넌트
 interface MarkdownRendererProps {
@@ -319,6 +306,7 @@ function MCPFunctionDisplay({
 }
 
 function ChatPage() {
+    const { user } = useAuth()
     const [messages, setMessages] = useState<Message[]>([])
     const [inputValue, setInputValue] = useState('')
     const [isLoading, setIsLoading] = useState(false)
@@ -329,6 +317,7 @@ function ChatPage() {
         'chat'
     )
     const [mcpEnabled, setMcpEnabled] = useState(true)
+    const [dbLoading, setDbLoading] = useState(true)
     const messagesEndRef = useRef<HTMLDivElement>(null)
 
     // 채팅 제목 생성 함수
@@ -340,7 +329,9 @@ function ChatPage() {
     }
 
     // 새 세션 생성
-    const createNewSession = useCallback((): string => {
+    const createNewSession = useCallback(async (): Promise<string> => {
+        if (!user) return ''
+
         const newSessionId = Date.now().toString()
         const newSession: ChatSession = {
             id: newSessionId,
@@ -350,184 +341,104 @@ function ChatPage() {
             updatedAt: new Date()
         }
 
-        setSessions(prev => {
-            const updatedSessions = [newSession, ...prev]
-            // localStorage에 저장
-            localStorage.setItem(
-                SESSIONS_STORAGE_KEY,
-                JSON.stringify(updatedSessions)
-            )
-            return updatedSessions
-        })
-        setCurrentSessionId(newSessionId)
-        setMessages([])
-        localStorage.setItem(CURRENT_SESSION_KEY, newSessionId)
-
-        return newSessionId
-    }, [])
+        try {
+            const dbSession = await createChatSession(newSession)
+            setSessions(prev => [dbSession, ...prev])
+            setCurrentSessionId(newSessionId)
+            setMessages([])
+            return newSessionId
+        } catch (error) {
+            console.error('세션 생성 실패:', error)
+            return ''
+        }
+    }, [user])
 
     // 세션 전환
     const switchToSession = (sessionId: string) => {
         const session = sessions.find(s => s.id === sessionId)
         if (session) {
             setCurrentSessionId(sessionId)
-            setMessages(
-                session.messages.map(msg => ({
-                    ...msg,
-                    timestamp: new Date(msg.timestamp)
-                }))
-            )
-            localStorage.setItem(CURRENT_SESSION_KEY, sessionId)
+            setMessages(session.messages)
         }
     }
 
     // 현재 세션 업데이트
     const updateCurrentSession = useCallback(
-        (messages: Message[]) => {
-            if (!currentSessionId) return
+        async (messages: Message[]) => {
+            if (!currentSessionId || !user) return
 
             setSessions(prev =>
                 prev.map(session => {
                     if (session.id === currentSessionId) {
+                        const newTitle =
+                            messages.length > 0 &&
+                            session.title === '새로운 채팅'
+                                ? generateChatTitle(
+                                      messages.find(m => m.sender === 'user')
+                                          ?.content || '새로운 채팅'
+                                  )
+                                : session.title
+
                         const updatedSession = {
                             ...session,
                             messages,
                             updatedAt: new Date(),
-                            // 첫 번째 사용자 메시지로 제목 업데이트
-                            title:
-                                messages.length > 0 &&
-                                session.title === '새로운 채팅'
-                                    ? generateChatTitle(
-                                          messages.find(
-                                              m => m.sender === 'user'
-                                          )?.content || '새로운 채팅'
-                                      )
-                                    : session.title
+                            title: newTitle
                         }
+
+                        // 제목이 변경된 경우 데이터베이스 업데이트
+                        if (newTitle !== session.title) {
+                            updateChatSession(currentSessionId, {
+                                title: newTitle
+                            }).catch(error =>
+                                console.error('세션 제목 업데이트 실패:', error)
+                            )
+                        }
+
                         return updatedSession
                     }
                     return session
                 })
             )
         },
-        [currentSessionId]
+        [currentSessionId, user]
     )
 
     // 컴포넌트 마운트 시 세션들과 현재 세션 로드
     useEffect(() => {
-        // 기존 세션들 로드
-        const savedSessions = localStorage.getItem(SESSIONS_STORAGE_KEY)
-        const savedCurrentSessionId = localStorage.getItem(CURRENT_SESSION_KEY)
+        if (!user) return
 
-        if (savedSessions) {
+        const loadSessions = async () => {
             try {
-                const parsed: ChatSession[] = JSON.parse(savedSessions)
-                const sessionsWithDate = parsed.map(session => ({
-                    ...session,
-                    createdAt: new Date(session.createdAt),
-                    updatedAt: new Date(session.updatedAt),
-                    messages: session.messages.map(msg => ({
-                        ...msg,
-                        timestamp: new Date(msg.timestamp)
-                    }))
-                }))
-                setSessions(sessionsWithDate)
+                setDbLoading(true)
+                const dbSessions = await getChatSessions()
+                setSessions(dbSessions)
 
-                // 현재 세션 설정
-                if (
-                    savedCurrentSessionId &&
-                    sessionsWithDate.find(s => s.id === savedCurrentSessionId)
-                ) {
-                    setCurrentSessionId(savedCurrentSessionId)
-                    const currentSession = sessionsWithDate.find(
-                        s => s.id === savedCurrentSessionId
-                    )
-                    if (currentSession) {
-                        setMessages(currentSession.messages)
-                    }
-                } else if (sessionsWithDate.length > 0) {
+                if (dbSessions.length > 0) {
                     // 가장 최근 세션을 현재 세션으로 설정
-                    const latestSession = sessionsWithDate[0]
+                    const latestSession = dbSessions[0]
                     setCurrentSessionId(latestSession.id)
                     setMessages(latestSession.messages)
-                    localStorage.setItem(CURRENT_SESSION_KEY, latestSession.id)
+                } else {
+                    // 세션이 없으면 새 세션 생성
+                    await createNewSession()
                 }
             } catch (error) {
                 console.error('세션 로드 실패:', error)
                 // 오류 발생 시 새 세션 생성
-                createNewSession()
-            }
-        } else {
-            // 저장된 세션이 없으면 기존 메시지 마이그레이션 시도
-            const savedMessages = localStorage.getItem(STORAGE_KEY)
-            if (savedMessages) {
-                try {
-                    const parsed = JSON.parse(savedMessages)
-                    const messagesWithDate = parsed.map(
-                        (msg: Message & { timestamp: string }) => ({
-                            ...msg,
-                            timestamp: new Date(msg.timestamp)
-                        })
-                    )
-
-                    // 기존 메시지로 첫 번째 세션 생성
-                    const firstSessionId = Date.now().toString()
-                    const firstSession: ChatSession = {
-                        id: firstSessionId,
-                        title:
-                            messagesWithDate.length > 0
-                                ? generateChatTitle(
-                                      messagesWithDate.find(
-                                          (m: Message) => m.sender === 'user'
-                                      )?.content || '이전 채팅'
-                                  )
-                                : '이전 채팅',
-                        messages: messagesWithDate,
-                        createdAt: new Date(),
-                        updatedAt: new Date()
-                    }
-
-                    setSessions([firstSession])
-                    setCurrentSessionId(firstSessionId)
-                    setMessages(messagesWithDate)
-
-                    // 새 형식으로 저장
-                    localStorage.setItem(
-                        SESSIONS_STORAGE_KEY,
-                        JSON.stringify([firstSession])
-                    )
-                    localStorage.setItem(CURRENT_SESSION_KEY, firstSessionId)
-
-                    // 기존 저장소 정리
-                    localStorage.removeItem(STORAGE_KEY)
-                } catch (error) {
-                    console.error('기존 채팅 기록 마이그레이션 실패:', error)
-                    createNewSession()
-                }
-            } else {
-                // 완전히 새로운 사용자
-                createNewSession()
+                await createNewSession()
+            } finally {
+                setDbLoading(false)
             }
         }
-    }, [createNewSession])
 
-    // 메시지 변경 시 현재 세션 업데이트 및 localStorage에 저장
+        loadSessions()
+    }, [user, createNewSession])
+
+    // 메시지 변경 시 현재 세션 업데이트
     useEffect(() => {
         if (messages.length > 0 && currentSessionId) {
             updateCurrentSession(messages)
-
-            // sessions 상태가 업데이트된 후 localStorage에 저장
-            const timer = setTimeout(() => {
-                setSessions(currentSessions => {
-                    localStorage.setItem(
-                        SESSIONS_STORAGE_KEY,
-                        JSON.stringify(currentSessions)
-                    )
-                    return currentSessions
-                })
-            }, 100)
-
-            return () => clearTimeout(timer)
         }
     }, [messages, currentSessionId, updateCurrentSession])
 
@@ -537,7 +448,8 @@ function ChatPage() {
     }, [messages])
 
     const handleSendMessage = async () => {
-        if (!inputValue.trim() || isLoading) return
+        if (!inputValue.trim() || isLoading || !user || !currentSessionId)
+            return
 
         const userMessage: Message = {
             id: Date.now().toString(),
@@ -557,6 +469,13 @@ function ChatPage() {
         setMessages(prev => [...prev, userMessage, aiMessage])
         setInputValue('')
         setIsLoading(true)
+
+        // 사용자 메시지를 데이터베이스에 저장
+        try {
+            await saveMessage(userMessage, currentSessionId)
+        } catch (error) {
+            console.error('사용자 메시지 저장 실패:', error)
+        }
 
         try {
             // 대화 기록 준비 (최근 10개 메시지만)
@@ -606,18 +525,29 @@ function ChatPage() {
 
                         if (data === '[DONE]') {
                             // 스트리밍 완료
+                            const finalMessage = {
+                                ...aiMessage,
+                                content: accumulatedText,
+                                isStreaming: false,
+                                functionCalls,
+                                functionResponses
+                            }
+
                             setMessages(prev =>
                                 prev.map(msg =>
-                                    msg.id === aiMessage.id
-                                        ? {
-                                              ...msg,
-                                              isStreaming: false,
-                                              functionCalls,
-                                              functionResponses
-                                          }
-                                        : msg
+                                    msg.id === aiMessage.id ? finalMessage : msg
                                 )
                             )
+
+                            // AI 메시지를 데이터베이스에 저장
+                            try {
+                                await saveMessage(
+                                    finalMessage,
+                                    currentSessionId
+                                )
+                            } catch (error) {
+                                console.error('AI 메시지 저장 실패:', error)
+                            }
                             return
                         }
 
@@ -715,61 +645,55 @@ function ChatPage() {
         }
     }
 
-    const clearCurrentChat = () => {
-        if (!currentSessionId) return
+    const clearCurrentChat = async () => {
+        if (!currentSessionId || !user) return
 
-        setMessages([])
-        setSessions(prev =>
-            prev.map(session =>
-                session.id === currentSessionId
-                    ? { ...session, messages: [], updatedAt: new Date() }
-                    : session
-            )
-        )
-
-        // localStorage 업데이트
-        setTimeout(() => {
-            setSessions(currentSessions => {
-                localStorage.setItem(
-                    SESSIONS_STORAGE_KEY,
-                    JSON.stringify(currentSessions)
+        try {
+            await clearSessionMessages(currentSessionId)
+            setMessages([])
+            setSessions(prev =>
+                prev.map(session =>
+                    session.id === currentSessionId
+                        ? { ...session, messages: [], updatedAt: new Date() }
+                        : session
                 )
-                return currentSessions
-            })
-        }, 100)
+            )
+        } catch (error) {
+            console.error('채팅 클리어 실패:', error)
+        }
     }
 
     const deleteSession = useCallback(
-        (sessionId: string) => {
-            setSessions(prev => {
-                const updatedSessions = prev.filter(
-                    session => session.id !== sessionId
-                )
+        async (sessionId: string) => {
+            if (!user) return
 
-                if (sessionId === currentSessionId) {
-                    if (updatedSessions.length > 0) {
-                        // 다른 세션으로 전환
-                        const nextSession = updatedSessions[0]
-                        setCurrentSessionId(nextSession.id)
-                        setMessages(nextSession.messages)
-                        localStorage.setItem(
-                            CURRENT_SESSION_KEY,
-                            nextSession.id
-                        )
-                    } else {
-                        // 마지막 세션이었다면 새 세션 생성 (비동기로 처리)
-                        setTimeout(() => createNewSession(), 0)
+            try {
+                await deleteChatSession(sessionId)
+
+                setSessions(prev => {
+                    const updatedSessions = prev.filter(
+                        session => session.id !== sessionId
+                    )
+
+                    if (sessionId === currentSessionId) {
+                        if (updatedSessions.length > 0) {
+                            // 다른 세션으로 전환
+                            const nextSession = updatedSessions[0]
+                            setCurrentSessionId(nextSession.id)
+                            setMessages(nextSession.messages)
+                        } else {
+                            // 마지막 세션이었다면 새 세션 생성 (비동기로 처리)
+                            setTimeout(() => createNewSession(), 0)
+                        }
                     }
-                }
 
-                localStorage.setItem(
-                    SESSIONS_STORAGE_KEY,
-                    JSON.stringify(updatedSessions)
-                )
-                return updatedSessions
-            })
+                    return updatedSessions
+                })
+            } catch (error) {
+                console.error('세션 삭제 실패:', error)
+            }
         },
-        [currentSessionId, createNewSession]
+        [currentSessionId, createNewSession, user]
     )
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -926,7 +850,14 @@ function ChatPage() {
                     <>
                         {/* 채팅 메시지 영역 */}
                         <main className="flex-1 overflow-y-auto p-4 space-y-4">
-                            {messages.length === 0 ? (
+                            {dbLoading ? (
+                                <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                                    <Loader2 className="w-12 h-12 mb-4 animate-spin" />
+                                    <p className="text-lg">
+                                        채팅 기록을 불러오는 중...
+                                    </p>
+                                </div>
+                            ) : messages.length === 0 ? (
                                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
                                     <Bot className="w-12 h-12 mb-4" />
                                     <p className="text-lg">

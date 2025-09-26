@@ -15,7 +15,8 @@ import {
     ArrowLeft,
     Folder,
     Wrench,
-    MessageSquare
+    MessageSquare,
+    Loader2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -42,7 +43,18 @@ import {
 } from '@/components/ui/select'
 import { useMCPClient } from '@/hooks/use-mcp-client'
 import MCPServerDetails from './mcp-server-details'
-import type { MCPServer, MCPTransportType } from '@/lib/mcp-client'
+import type { MCPTransportType } from '@/lib/mcp-client'
+import { useAuth } from '@/contexts/AuthContext'
+import {
+    saveMCPServer,
+    getMCPServers,
+    updateMCPServer,
+    deleteMCPServer,
+    type MCPServer as DBMCPServer
+} from '@/lib/database-client'
+
+// 데이터베이스 타입을 사용 (호환성 유지)
+type MCPServer = DBMCPServer
 
 // 서버 통계 컴포넌트
 function ServerStats({
@@ -195,7 +207,7 @@ const SERVER_TEMPLATES = [
     }
 ]
 
-const STORAGE_KEY = 'mcp-servers'
+// 로컬 스토리지는 더 이상 사용하지 않음 (데이터베이스로 마이그레이션됨)
 
 // 상태 표시 컴포넌트
 function StatusBadge({ status }: { status: MCPServer['status'] }) {
@@ -522,52 +534,44 @@ function ServerForm({
 
 // 메인 MCP 서버 관리자 컴포넌트
 export default function MCPServerManager() {
+    const { user } = useAuth()
     const [servers, setServers] = useState<MCPServer[]>([])
     const [isDialogOpen, setIsDialogOpen] = useState(false)
     const [editingServer, setEditingServer] = useState<MCPServer | null>(null)
     const [isLoading, setIsLoading] = useState(false)
+    const [dbLoading, setDbLoading] = useState(true)
     const [viewingServer, setViewingServer] = useState<MCPServer | null>(null)
 
     const { connectServer, disconnectServer } = useMCPClient()
 
-    // localStorage에서 서버 목록 로드
+    // 데이터베이스에서 서버 목록 로드
     useEffect(() => {
-        const savedServers = localStorage.getItem(STORAGE_KEY)
-        if (savedServers) {
-            try {
-                const parsed: MCPServer[] = JSON.parse(savedServers)
-                const serversWithDate = parsed.map(server => ({
-                    ...server,
-                    createdAt: new Date(server.createdAt),
-                    updatedAt: new Date(server.updatedAt),
-                    lastConnected: server.lastConnected
-                        ? new Date(server.lastConnected)
-                        : undefined
-                }))
-                setServers(serversWithDate)
+        if (!user) return
 
-                // 서버 상태 업데이트는 개별 연결/해제 시 처리
+        const loadServers = async () => {
+            try {
+                setDbLoading(true)
+                const dbServers = await getMCPServers()
+                setServers(dbServers)
             } catch (error) {
                 console.error('서버 목록 로드 실패:', error)
+            } finally {
+                setDbLoading(false)
             }
         }
 
-        // 컴포넌트 언마운트 시 정리는 개별 API 호출로 처리
-    }, [])
-
-    // 서버 목록을 localStorage에 저장
-    const saveServers = (updatedServers: MCPServer[]) => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedServers))
-        setServers(updatedServers)
-    }
+        loadServers()
+    }, [user])
 
     // 새 서버 추가
-    const handleAddServer = (
+    const handleAddServer = async (
         serverData: Omit<
             MCPServer,
             'id' | 'connected' | 'status' | 'createdAt' | 'updatedAt'
         >
     ) => {
+        if (!user) return
+
         const newServer: MCPServer = {
             id: Date.now().toString(),
             ...serverData,
@@ -577,21 +581,23 @@ export default function MCPServerManager() {
             updatedAt: new Date()
         }
 
-        // 새 서버 상태는 연결 시 자동으로 업데이트됩니다
-
-        const updatedServers = [...servers, newServer]
-        saveServers(updatedServers)
-        setIsDialogOpen(false)
+        try {
+            await saveMCPServer(newServer)
+            setServers(prev => [...prev, newServer])
+            setIsDialogOpen(false)
+        } catch (error) {
+            console.error('서버 추가 실패:', error)
+        }
     }
 
     // 서버 수정
-    const handleEditServer = (
+    const handleEditServer = async (
         serverData: Omit<
             MCPServer,
             'id' | 'connected' | 'status' | 'createdAt' | 'updatedAt'
         >
     ) => {
-        if (!editingServer) return
+        if (!editingServer || !user) return
 
         const updatedServer: MCPServer = {
             ...editingServer,
@@ -599,36 +605,46 @@ export default function MCPServerManager() {
             updatedAt: new Date()
         }
 
-        const updatedServers = servers.map(server =>
-            server.id === editingServer.id ? updatedServer : server
-        )
-        saveServers(updatedServers)
-        setEditingServer(null)
+        try {
+            await updateMCPServer(editingServer.id, updatedServer)
+            setServers(prev =>
+                prev.map(server =>
+                    server.id === editingServer.id ? updatedServer : server
+                )
+            )
+            setEditingServer(null)
+        } catch (error) {
+            console.error('서버 수정 실패:', error)
+        }
     }
 
     // 서버 삭제
     const handleDeleteServer = async (serverId: string) => {
-        if (confirm('정말로 이 서버를 삭제하시겠습니까?')) {
-            const server = servers.find(s => s.id === serverId)
+        if (!user || !confirm('정말로 이 서버를 삭제하시겠습니까?')) return
 
-            // 연결되어 있다면 먼저 해제
-            if (server?.connected) {
-                try {
-                    await disconnectServer(serverId)
-                } catch (error) {
-                    console.error('연결 해제 실패:', error)
-                }
+        const server = servers.find(s => s.id === serverId)
+
+        // 연결되어 있다면 먼저 해제
+        if (server?.connected) {
+            try {
+                await disconnectServer(serverId)
+            } catch (error) {
+                console.error('연결 해제 실패:', error)
             }
+        }
 
-            const updatedServers = servers.filter(
-                server => server.id !== serverId
-            )
-            saveServers(updatedServers)
+        try {
+            await deleteMCPServer(serverId)
+            setServers(prev => prev.filter(server => server.id !== serverId))
+        } catch (error) {
+            console.error('서버 삭제 실패:', error)
         }
     }
 
     // 서버 연결/연결 해제
     const handleToggleConnection = async (serverId: string) => {
+        if (!user) return
+
         setIsLoading(true)
 
         const server = servers.find(s => s.id === serverId)
@@ -641,53 +657,52 @@ export default function MCPServerManager() {
             if (server.connected) {
                 // 연결 해제
                 await disconnectServer(serverId)
-                // 성공 시 서버 상태 업데이트
+                const updatedServer = {
+                    ...server,
+                    connected: false,
+                    status: 'disconnected' as const
+                }
+                // 상태 업데이트
                 setServers(prev =>
-                    prev.map(s =>
-                        s.id === serverId
-                            ? {
-                                  ...s,
-                                  connected: false,
-                                  status: 'disconnected' as const
-                              }
-                            : s
-                    )
+                    prev.map(s => (s.id === serverId ? updatedServer : s))
                 )
+                // 데이터베이스 업데이트
+                await updateMCPServer(serverId, updatedServer)
             } else {
                 // 연결 시도
                 await connectServer(server)
-                // 성공 시 서버 상태 업데이트
+                const updatedServer = {
+                    ...server,
+                    connected: true,
+                    status: 'connected' as const,
+                    lastConnected: new Date()
+                }
+                // 상태 업데이트
                 setServers(prev =>
-                    prev.map(s =>
-                        s.id === serverId
-                            ? {
-                                  ...s,
-                                  connected: true,
-                                  status: 'connected' as const,
-                                  lastConnected: new Date()
-                              }
-                            : s
-                    )
+                    prev.map(s => (s.id === serverId ? updatedServer : s))
                 )
+                // 데이터베이스 업데이트
+                await updateMCPServer(serverId, updatedServer)
             }
         } catch (error) {
             console.error('연결 토글 실패:', error)
+            const errorServer = {
+                ...server,
+                connected: false,
+                status: 'error' as const,
+                errorMessage:
+                    error instanceof Error ? error.message : '연결 실패'
+            }
             // 실패 시 오류 상태로 업데이트
             setServers(prev =>
-                prev.map(s =>
-                    s.id === serverId
-                        ? {
-                              ...s,
-                              connected: false,
-                              status: 'error' as const,
-                              errorMessage:
-                                  error instanceof Error
-                                      ? error.message
-                                      : '연결 실패'
-                          }
-                        : s
-                )
+                prev.map(s => (s.id === serverId ? errorServer : s))
             )
+            // 데이터베이스에도 오류 상태 저장
+            try {
+                await updateMCPServer(serverId, errorServer)
+            } catch (updateError) {
+                console.error('서버 상태 업데이트 실패:', updateError)
+            }
         } finally {
             setIsLoading(false)
         }
@@ -695,6 +710,8 @@ export default function MCPServerManager() {
 
     // 서버 활성화/비활성화 토글
     const handleToggleEnabled = async (serverId: string) => {
+        if (!user) return
+
         const server = servers.find(s => s.id === serverId)
         if (!server) return
 
@@ -709,19 +726,22 @@ export default function MCPServerManager() {
             }
         }
 
-        const updatedServers = servers.map(s => {
-            if (s.id === serverId) {
-                return {
-                    ...s,
-                    enabled: newEnabled,
-                    connected: newEnabled ? s.connected : false,
-                    status: newEnabled ? s.status : ('disconnected' as const),
-                    updatedAt: new Date()
-                }
-            }
-            return s
-        })
-        saveServers(updatedServers)
+        const updatedServer = {
+            ...server,
+            enabled: newEnabled,
+            connected: newEnabled ? server.connected : false,
+            status: newEnabled ? server.status : ('disconnected' as const),
+            updatedAt: new Date()
+        }
+
+        try {
+            await updateMCPServer(serverId, updatedServer)
+            setServers(prev =>
+                prev.map(s => (s.id === serverId ? updatedServer : s))
+            )
+        } catch (error) {
+            console.error('서버 활성화 토글 실패:', error)
+        }
     }
 
     // 서버 세부 정보 보기 화면
@@ -791,7 +811,16 @@ export default function MCPServerManager() {
 
             {/* 서버 목록 */}
             <div className="grid gap-4">
-                {servers.length === 0 ? (
+                {dbLoading ? (
+                    <Card>
+                        <CardContent className="flex flex-col items-center justify-center py-12">
+                            <Loader2 className="w-12 h-12 text-muted-foreground mb-4 animate-spin" />
+                            <h3 className="text-lg font-semibold mb-2">
+                                서버 목록을 불러오는 중...
+                            </h3>
+                        </CardContent>
+                    </Card>
+                ) : servers.length === 0 ? (
                     <Card>
                         <CardContent className="flex flex-col items-center justify-center py-12">
                             <Server className="w-12 h-12 text-muted-foreground mb-4" />
